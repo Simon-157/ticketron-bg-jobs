@@ -1,0 +1,164 @@
+const admin = require("firebase-admin");
+const config = require("./config");
+
+if (!admin.apps.length) {
+    admin.initializeApp({
+        credential: admin.credential.cert({
+            projectId: config.projectId,
+            clientEmail: config.clientEmail,
+            privateKey: config.privateKey.replace(/\\n/g, "\n"),
+        }),
+        databaseURL: `https://${config.projectId}.firebaseio.com`,
+    });
+}
+
+const db = admin.firestore();
+const messaging = admin.messaging();
+
+// Helper function to send notifications
+async function sendNotification(notificationData, userToken) {
+    const message = {
+        notification: {
+            title: notificationData.title || "Notification",
+            body: notificationData.message,
+        },
+        token: userToken,
+        data: {
+            type: notificationData.type,
+            timestamp: notificationData.timestamp.toString(),
+            senderId: notificationData.sender_id || '',
+        },
+    };
+
+    try {
+        const response = await messaging.send(message);
+        console.log('Successfully sent message:', response);
+    } catch (error) {
+        console.error('Error sending message:', error);
+    }
+}
+
+// Helper function to fetch user data
+async function fetchUser(userId) {
+    const userSnapshot = await db.collection("users").doc(userId).get();
+    return userSnapshot.data();
+}
+
+// Listen for changes in events collection
+const eventsRef = db.collection("events");
+eventsRef.onSnapshot(async (snapshot) => {
+    snapshot.docChanges().forEach(async (change) => {
+        if (change.type === "added") {
+            const event = change.doc.data();
+            const organizerSnapshot = await db.collection("organizers").doc(event.organizer_id).get();
+            const organizer = organizerSnapshot.data();
+            const usersSnapshot = await db.collection("users").get();
+            const users = usersSnapshot.docs.map(doc => doc.data());
+
+            users.forEach(async (user) => {
+                if (user.userToken) {
+                    const notificationData = {
+                        type: "event_post",
+                        message: `${organizer.name} has posted a new event. Check it out!`,
+                        timestamp: Date.now(),
+                        user_id: user.id,
+                        event_id: event.id,
+                    };
+                    await sendNotification(notificationData, user.userToken);
+                }
+            });
+        }
+    });
+});
+
+// Listen for changes in payments collection
+const paymentsRef = db.collection("payments");
+paymentsRef.onSnapshot(async (snapshot) => {
+    snapshot.docChanges().forEach(async (change) => {
+        if (change.type === "added") {
+            const payment = change.doc.data();
+            const user = await fetchUser(payment.user_id);
+            if (user.userToken) {
+                const notificationData = {
+                    type: "payment_status",
+                    message: `${payment.name} has ${payment.status} your payment. Check it out!`,
+                    timestamp: Date.now(),
+                    user_id: user.id,
+                    status: payment.status,
+                };
+                await sendNotification(notificationData, user.userToken);
+            }
+        }
+    });
+});
+
+// Listen for changes in messages collection
+const messagesRef = db.collection("messages");
+messagesRef.onSnapshot(async (snapshot) => {
+    snapshot.docChanges().forEach(async (change) => {
+        if (change.type === "added") {
+            const message = change.doc.data();
+            const sender = message.sender_type === "user" ? await fetchUser(message.sender_id) : await db.collection("organizers").doc(message.sender_id).get().then(doc => doc.data());
+            const receiver = message.receiver_type === "user" ? await fetchUser(message.receiver_id) : await db.collection("organizers").doc(message.receiver_id).get().then(doc => doc.data());
+
+            if (receiver && receiver.userToken) {
+                const notificationData = {
+                    type: "new_message",
+                    message: message.message,
+                    timestamp: Date.now(),
+                    user_id: receiver.id,
+                    sender_id: sender ? sender.id : "",
+                };
+                await sendNotification(notificationData, receiver.userToken);
+            }
+        }
+    });
+});
+
+// Listen for changes in tickets collection
+const ticketsRef = db.collection("tickets");
+ticketsRef.onSnapshot(async (snapshot) => {
+    snapshot.docChanges().forEach(async (change) => {
+        if (change.type === "added") {
+            const ticket = change.doc.data();
+            const user = await fetchUser(ticket.user_id);
+            if (user.userToken) {
+                const eventSnapshot = await db.collection("events").doc(ticket.event_id).get();
+                const event = eventSnapshot.data();
+
+                const notificationData = {
+                    type: "ticket_purchase",
+                    message: `Thank you for purchasing for ${event.event_name}!`,
+                    timestamp: Date.now(),
+                    user_id: user.id,
+                    event_id: ticket.event_id,
+                };
+                await sendNotification(notificationData, user.userToken);
+            }
+        }
+    });
+});
+
+// Listen for changes in attendance collection
+const attendanceRef = db.collection("attendance");
+attendanceRef.onSnapshot(async (snapshot) => {
+    snapshot.docChanges().forEach(async (change) => {
+        if (change.type === "added") {
+            const attendance = change.doc.data();
+            const user = await fetchUser(attendance.user_id);
+            if (user.userToken) {
+                const eventSnapshot = await db.collection("events").doc(attendance.event_id).get();
+                const event = eventSnapshot.data();
+                const notificationData = {
+                    type: "event_attendance_reminder",
+                    message: `Make sure to attend ${event.event_name}!`,
+                    timestamp: Date.now(),
+                    user_id: user.id,
+                    event_id: attendance.event_id,
+                    event_name: event.event_name,
+                };
+                await sendNotification(notificationData, user.userToken);
+            }
+        }
+    });
+});

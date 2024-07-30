@@ -1,0 +1,24 @@
+{
+  "name": "ticketron-bg-job",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+
+  "scripts": {
+
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+
+  },
+
+  "dependencies": {
+
+    "dotenv": "^16.4.5",
+
+    "firebase-admin": "^12.2.0",
+
+    "nodemon": "^3.1.4"
+
+  }
+
+}
