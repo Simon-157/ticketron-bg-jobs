@@ -2,14 +2,20 @@ const admin = require("firebase-admin");
 const config = require("./config");
 
 if (!admin.apps.length) {
-    admin.initializeApp({
-        credential: admin.credential.cert({
-            projectId: config.projectId,
-            clientEmail: config.clientEmail,
-            privateKey: config.privateKey.replace(/\\n/g, "\n"),
-        }),
-        databaseURL: `https://${config.projectId}.firebaseio.com`,
-    });
+    try {
+        admin.initializeApp({
+            credential: admin.credential.cert({
+                projectId: config.projectId,
+                clientEmail: config.clientEmail,
+                privateKey: config.privateKey.replace(/\\n/g, "\n"),
+            }),
+            databaseURL: `https://${config.projectId}.firebaseio.com`,
+        });
+        console.log('Firebase initialized successfully');
+    } catch (error) {
+        console.error('Error initializing Firebase:', error);
+        process.exit(1);
+    }
 }
 
 const db = admin.firestore();
@@ -40,8 +46,17 @@ async function sendNotification(notificationData, userToken) {
 
 // Helper function to fetch user data
 async function fetchUser(userId) {
-    const userSnapshot = await db.collection("users").doc(userId).get();
-    return userSnapshot.data();
+    if (!userId) {
+        console.error('Invalid userId:', userId);
+        return null;
+    }
+    try {
+        const userSnapshot = await db.collection("users").doc(userId).get();
+        return userSnapshot.data();
+    } catch (error) {
+        console.error('Error fetching user:', error);
+        return null;
+    }
 }
 
 // Listen for changes in events collection
@@ -50,23 +65,31 @@ eventsRef.onSnapshot(async (snapshot) => {
     snapshot.docChanges().forEach(async (change) => {
         if (change.type === "added") {
             const event = change.doc.data();
-            const organizerSnapshot = await db.collection("organizers").doc(event.organizer_id).get();
-            const organizer = organizerSnapshot.data();
-            const usersSnapshot = await db.collection("users").get();
-            const users = usersSnapshot.docs.map(doc => doc.data());
+            if (!event.organizer_id) {
+                console.error('Invalid organizer_id in event:', event);
+                return;
+            }
+            try {
+                const organizerSnapshot = await db.collection("organizers").doc(event.organizer_id).get();
+                const organizer = organizerSnapshot.data();
+                const usersSnapshot = await db.collection("users").get();
+                const users = usersSnapshot.docs.map(doc => doc.data());
 
-            users.forEach(async (user) => {
-                if (user.userToken) {
-                    const notificationData = {
-                        type: "event_post",
-                        message: `${organizer.name} has posted a new event. Check it out!`,
-                        timestamp: Date.now(),
-                        user_id: user.id,
-                        event_id: event.id,
-                    };
-                    await sendNotification(notificationData, user.userToken);
-                }
-            });
+                users.forEach(async (user) => {
+                    if (user.userToken) {
+                        const notificationData = {
+                            type: "event_post",
+                            message: `${organizer.name} has posted a new event. Check it out!`,
+                            timestamp: Date.now(),
+                            user_id: user.id,
+                            event_id: event.id,
+                        };
+                        await sendNotification(notificationData, user.userToken);
+                    }
+                });
+            } catch (error) {
+                console.error('Error processing event changes:', error);
+            }
         }
     });
 });
@@ -77,16 +100,24 @@ paymentsRef.onSnapshot(async (snapshot) => {
     snapshot.docChanges().forEach(async (change) => {
         if (change.type === "added") {
             const payment = change.doc.data();
-            const user = await fetchUser(payment.user_id);
-            if (user.userToken) {
-                const notificationData = {
-                    type: "payment_status",
-                    message: `${payment.name} has ${payment.status} your payment. Check it out!`,
-                    timestamp: Date.now(),
-                    user_id: user.id,
-                    status: payment.status,
-                };
-                await sendNotification(notificationData, user.userToken);
+            if (!payment.user_id) {
+                console.error('Invalid user_id in payment:', payment);
+                return;
+            }
+            try {
+                const user = await fetchUser(payment.user_id);
+                if (user && user.userToken) {
+                    const notificationData = {
+                        type: "payment_status",
+                        message: `${payment.name} has ${payment.status} your payment. Check it out!`,
+                        timestamp: Date.now(),
+                        user_id: user.id,
+                        status: payment.status,
+                    };
+                    await sendNotification(notificationData, user.userToken);
+                }
+            } catch (error) {
+                console.error('Error processing payment changes:', error);
             }
         }
     });
@@ -98,18 +129,26 @@ messagesRef.onSnapshot(async (snapshot) => {
     snapshot.docChanges().forEach(async (change) => {
         if (change.type === "added") {
             const message = change.doc.data();
-            const sender = message.sender_type === "user" ? await fetchUser(message.sender_id) : await db.collection("organizers").doc(message.sender_id).get().then(doc => doc.data());
-            const receiver = message.receiver_type === "user" ? await fetchUser(message.receiver_id) : await db.collection("organizers").doc(message.receiver_id).get().then(doc => doc.data());
+            if (!message.sender_id || !message.receiver_id) {
+                console.error('Invalid sender_id or receiver_id in message:', message);
+                return;
+            }
+            try {
+                const sender = message.sender_type === "user" ? await fetchUser(message.sender_id) : await db.collection("organizers").doc(message.sender_id).get().then(doc => doc.data());
+                const receiver = message.receiver_type === "user" ? await fetchUser(message.receiver_id) : await db.collection("organizers").doc(message.receiver_id).get().then(doc => doc.data());
 
-            if (receiver && receiver.userToken) {
-                const notificationData = {
-                    type: "new_message",
-                    message: message.message,
-                    timestamp: Date.now(),
-                    user_id: receiver.id,
-                    sender_id: sender ? sender.id : "",
-                };
-                await sendNotification(notificationData, receiver.userToken);
+                if (receiver && receiver.userToken) {
+                    const notificationData = {
+                        type: "new_message",
+                        message: message.message,
+                        timestamp: Date.now(),
+                        user_id: receiver.id,
+                        sender_id: sender ? sender.id : "",
+                    };
+                    await sendNotification(notificationData, receiver.userToken);
+                }
+            } catch (error) {
+                console.error('Error processing message changes:', error);
             }
         }
     });
@@ -121,19 +160,26 @@ ticketsRef.onSnapshot(async (snapshot) => {
     snapshot.docChanges().forEach(async (change) => {
         if (change.type === "added") {
             const ticket = change.doc.data();
-            const user = await fetchUser(ticket.user_id);
-            if (user.userToken) {
-                const eventSnapshot = await db.collection("events").doc(ticket.event_id).get();
-                const event = eventSnapshot.data();
-
-                const notificationData = {
-                    type: "ticket_purchase",
-                    message: `Thank you for purchasing for ${event.event_name}!`,
-                    timestamp: Date.now(),
-                    user_id: user.id,
-                    event_id: ticket.event_id,
-                };
-                await sendNotification(notificationData, user.userToken);
+            if (!ticket.user_id || !ticket.event_id) {
+                console.error('Invalid user_id or event_id in ticket:', ticket);
+                return;
+            }
+            try {
+                const user = await fetchUser(ticket.user_id);
+                if (user && user.userToken) {
+                    const eventSnapshot = await db.collection("events").doc(ticket.event_id).get();
+                    const event = eventSnapshot.data();
+                    const notificationData = {
+                        type: "ticket_purchase",
+                        message: `Thank you for purchasing for ${event.event_name}!`,
+                        timestamp: Date.now(),
+                        user_id: user.id,
+                        event_id: ticket.event_id,
+                    };
+                    await sendNotification(notificationData, user.userToken);
+                }
+            } catch (error) {
+                console.error('Error processing ticket changes:', error);
             }
         }
     });
@@ -145,20 +191,29 @@ attendanceRef.onSnapshot(async (snapshot) => {
     snapshot.docChanges().forEach(async (change) => {
         if (change.type === "added") {
             const attendance = change.doc.data();
-            const user = await fetchUser(attendance.user_id);
-            if (user.userToken) {
-                const eventSnapshot = await db.collection("events").doc(attendance.event_id).get();
-                const event = eventSnapshot.data();
-                const notificationData = {
-                    type: "event_attendance_reminder",
-                    message: `Make sure to attend ${event.event_name}!`,
-                    timestamp: Date.now(),
-                    user_id: user.id,
-                    event_id: attendance.event_id,
-                    event_name: event.event_name,
-                };
-                await sendNotification(notificationData, user.userToken);
+            if (!attendance.user_id || !attendance.event_id) {
+                console.error('Invalid user_id or event_id in attendance:', attendance);
+                return;
+            }
+            try {
+                const user = await fetchUser(attendance.user_id);
+                if (user && user.userToken) {
+                    const eventSnapshot = await db.collection("events").doc(attendance.event_id).get();
+                    const event = eventSnapshot.data();
+                    const notificationData = {
+                        type: "event_attendance_reminder",
+                        message: `Make sure to attend ${event.event_name}!`,
+                        timestamp: Date.now(),
+                        user_id: user.id,
+                        event_id: attendance.event_id,
+                        event_name: event.event_name,
+                    };
+                    await sendNotification(notificationData, user.userToken);
+                }
+            } catch (error) {
+                console.error('Error processing attendance changes:', error);
             }
         }
     });
 });
+
